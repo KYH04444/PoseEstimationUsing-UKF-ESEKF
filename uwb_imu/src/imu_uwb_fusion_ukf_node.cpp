@@ -20,13 +20,13 @@ vector<sensor_msgs::ImuConstPtr> imu_buffer;
 vector<uwb_imu::UwbMsg::ConstPtr> uwb_buffer;
 mutex imu_mtx, uwb_mtx;
 
-ImuUwbFusionUkf::ImuUwbFusionUkf imu_uwb_fuser; // fuser object
+UKF::ImuUwbFusionUkf imu_uwb_fuser; // fuser object
 ros::Publisher traj_puber;
 ros::Publisher result_puber;
 bool initialized = false;
-ImuUwbFusionUkf::ImuData<double> last_uwb_imu;     //last interpolated imu data at uwb time
-ImuUwbFusionUkf::ImuData<double> last_imu;         //last imu data for predict
-ImuUwbFusionUkf::State<double> last_updated_state; //last updated state by uwb ㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁ
+UKF::ImuData<double> last_uwb_imu;     //last interpolated imu data at uwb time
+UKF::ImuData<double> last_imu;         //last imu data for predict
+UKF::STATE last_updated_state; //last updated state by uwb ㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁ
 
 void imuCallback(const sensor_msgs::ImuConstPtr &msg)
 {
@@ -58,9 +58,9 @@ void interpolateImuData(const sensor_msgs::ImuConstPtr &first_data, const sensor
 
 }
 
-ImuUwbFusionUkf::ImuData<double> fromImuMsg(const sensor_msgs::Imu &msg)
+UKF::ImuData<double> fromImuMsg(const sensor_msgs::Imu &msg)
 {
-    ImuUwbFusionUkf::ImuData<double> imu_data;
+    UKF::ImuData<double> imu_data;
     imu_data.stamp = msg.header.stamp.toSec();
     imu_data.gyr[0] = msg.angular_velocity.x;
     imu_data.gyr[1] = msg.angular_velocity.y;
@@ -72,12 +72,11 @@ ImuUwbFusionUkf::ImuData<double> fromImuMsg(const sensor_msgs::Imu &msg)
     return move(imu_data);
 }
 
-ImuUwbFusionUkf::UwbData<double> fromUwbMsg(const uwb_imu::UwbMsg &msg)
+UKF::UwbData<double> fromUwbMsg(const uwb_imu::UwbMsg &msg)
 {
-    ImuUwbFusionUkf::UwbData<double> uwb_data;
+    UKF::UwbData<double> uwb_data;
     uwb_data.data[0] = msg.pos_x;
     uwb_data.data[1] = msg.pos_y;
-    // uwb_data.data[2] = msg.pos_z;
     uwb_data.data[2] = msg.pos_z;
     uwb_data.cov.setIdentity();
     uwb_data.cov(0, 0) = 0.00002; // need to fix it
@@ -88,18 +87,19 @@ ImuUwbFusionUkf::UwbData<double> fromUwbMsg(const uwb_imu::UwbMsg &msg)
 
 void pubResult()
 {   
-        ImuUwbFusionUkf::State<double> result = imu_uwb_fuser.getState();
+        UKF::STATE result = imu_uwb_fuser.getState();
         geometry_msgs::PoseStamped pose;
-        Eigen::Quaterniond q(result.Rot);
+        Eigen::Quaterniond q = Eigen::Quaternion<double>(result.Rot);
         pose.header.frame_id = "world";
         pose.header.stamp = uwb_buffer[0]->header.stamp;
         pose.pose.position.x = result.p[0];
         pose.pose.position.y = result.p[1];
         pose.pose.position.z = result.p[2];
-        pose.pose.orientation.w = result.q.w();
-        pose.pose.orientation.x = result.q.x();
-        pose.pose.orientation.y = result.q.y();
-        pose.pose.orientation.z = result.q.z();
+
+        pose.pose.orientation.w = q.x();
+        pose.pose.orientation.x = q.y();
+        pose.pose.orientation.y = q.z();
+        pose.pose.orientation.z = q.w();
         path.poses.push_back(pose);
         path.header = pose.header;
         traj_puber.publish(path);
@@ -138,7 +138,7 @@ void processThread()
             }
 
             // use imu datas at start to initial imu pose
-            vector<Fusion::ImuData<double>> imu_datas;
+            vector<UKF::ImuData<double>> imu_datas;
             for (auto &imu_msg : imu_buffer)
             {
                 imu_datas.push_back(fromImuMsg(*imu_msg));
@@ -197,11 +197,13 @@ void processThread()
 
         for (auto &imu_msg : imu_buffer)
         {
-            ImuUwbFusionUkf::ImuData<double> cur_imu = fromImuMsg(*imu_msg);
+            UKF::ImuData<double> cur_imu = fromImuMsg(*imu_msg);
             if (cur_imu.stamp > last_imu.stamp)
-            {   imu_uwb_fuser.SigmaPoints()
-                imu_uwb_fuser.motionModel(last_imu, cur_imu);
-                imu_uwb_fuser.UT()
+            {   float dt;
+                dt = imu_uwb_fuser.StatePropagation(last_imu,cur_imu); 
+                imu_uwb_fuser.F_num(cur_imu, dt);// 222222222222222222222222222222
+                imu_uwb_fuser.G_num(cur_imu, dt); // 3333333333333333333333333333333333
+                imu_uwb_fuser.CovPropagation();
                 last_imu = cur_imu;
             }
         }
@@ -209,10 +211,10 @@ void processThread()
         // use uwb data to update state
         if (uwb_buffer.size() != 0)
         {
-            imu_uwb_fuser.recoverState(last_updated_state);
+            // imu_uwb_fuser.update();// 44444444444444444444444444444
 
             // collect imu datas during two neighbor gps frames
-            vector<ImuUwbFusionUkf::ImuData<double>> imu_datas(0);
+            vector<UKF::ImuData<double>> imu_datas(0);
             // search first imu data after gps data
             auto iter = imu_buffer.begin();
  
@@ -246,15 +248,18 @@ void processThread()
             double cur_stamp = uwb_buffer[0]->header.stamp.toSec();
 
             interpolateImuData(*(iter - 1), *iter, cur_stamp, inter_imu); //here
-            ImuUwbFusionUkf::ImuData<double> cur_uwb_imu = fromImuMsg(inter_imu);
+            UKF::ImuData<double> cur_uwb_imu = fromImuMsg(inter_imu);
 
             cur_uwb_imu.stamp = cur_stamp;
             imu_datas.push_back(cur_uwb_imu);
             // generate uwb data
-            ImuUwbFusionUkf::UwbData<double> uwb_data = fromUwbMsg(*uwb_buffer[0]);
+            UKF::UwbData<double> uwb_data = fromUwbMsg(*uwb_buffer[0]);
 
             // update state (core)
-            imu_uwb_fuser.uwbUpdate(uwb_data, imu_datas);
+            // R(Eigen::Matrix3d::Identity()*0.00002)
+            Eigen::Matrix3d R;
+            R = Eigen::Matrix3d::Identity()*0.00002;
+            imu_uwb_fuser.update(uwb_data, R); //5555555555555555555555555555555555555555
 
             // update last data
             last_uwb_imu = cur_uwb_imu;
