@@ -26,7 +26,7 @@ ros::Publisher result_puber;
 bool initialized = false;
 UKF::ImuData<double> last_uwb_imu;     //last interpolated imu data at uwb time
 UKF::ImuData<double> last_imu;         //last imu data for predict
-UKF::STATE last_updated_state; //last updated state by uwb ㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁㅁ
+UKF::STATE last_updated_state; //last updated state by uwb 
 
 void imuCallback(const sensor_msgs::ImuConstPtr &msg)
 {
@@ -87,23 +87,24 @@ UKF::UwbData<double> fromUwbMsg(const uwb_imu::UwbMsg &msg)
 
 void pubResult()
 {   
-        UKF::STATE result = imu_uwb_fuser.getState();
-        geometry_msgs::PoseStamped pose;
-        Eigen::Quaterniond q = Eigen::Quaternion<double>(result.Rot);
-        pose.header.frame_id = "world";
-        pose.header.stamp = uwb_buffer[0]->header.stamp;
-        pose.pose.position.x = result.p[0];
-        pose.pose.position.y = result.p[1];
-        pose.pose.position.z = result.p[2];
+    UKF::STATE result = imu_uwb_fuser.getState();
+    geometry_msgs::PoseStamped pose;
+    std::cout << result.Rot <<std::endl;
+    Eigen::Quaterniond q = Eigen::Quaternion<double>(result.Rot);
+    pose.header.frame_id = "world";
+    pose.header.stamp = uwb_buffer[0]->header.stamp;
+    pose.pose.position.x = result.p[0];
+    pose.pose.position.y = result.p[1];
+    pose.pose.position.z = result.p[2];
 
-        pose.pose.orientation.w = q.x();
-        pose.pose.orientation.x = q.y();
-        pose.pose.orientation.y = q.z();
-        pose.pose.orientation.z = q.w();
-        path.poses.push_back(pose);
-        path.header = pose.header;
-        traj_puber.publish(path);
-        result_puber.publish(pose);
+    pose.pose.orientation.w = q.x();
+    pose.pose.orientation.x = q.y();
+    pose.pose.orientation.y = q.z();
+    pose.pose.orientation.z = q.w();
+    path.poses.push_back(pose);
+    path.header = pose.header;
+    traj_puber.publish(path);
+    result_puber.publish(pose);
 }
 
 void processThread()
@@ -113,7 +114,6 @@ void processThread()
     {
         unique_lock<mutex> imu_lock(imu_mtx);
         unique_lock<mutex> uwb_lock(uwb_mtx);
-
         // if no data, no need update state
         if (!imu_buffer.size() && !uwb_buffer.size())
         {
@@ -194,25 +194,25 @@ void processThread()
             // cout <<"init" << endl;
             continue;
         }
-
+        
         for (auto &imu_msg : imu_buffer)
         {
             UKF::ImuData<double> cur_imu = fromImuMsg(*imu_msg);
             if (cur_imu.stamp > last_imu.stamp)
-            {   float dt;
+            {   
+                float dt;
                 dt = imu_uwb_fuser.StatePropagation(last_imu,cur_imu); 
-                imu_uwb_fuser.F_num(cur_imu, dt);// 222222222222222222222222222222
-                imu_uwb_fuser.G_num(cur_imu, dt); // 3333333333333333333333333333333333
-                imu_uwb_fuser.CovPropagation();
+                imu_uwb_fuser.F_num(cur_imu, dt); 
+                imu_uwb_fuser.G_num(cur_imu, dt); 
+                imu_uwb_fuser.CovPropagation(); 
                 last_imu = cur_imu;
             }
         }
 
         // use uwb data to update state
         if (uwb_buffer.size() != 0)
-        {
-            // imu_uwb_fuser.update();// 44444444444444444444444444444
-
+        {   
+            imu_uwb_fuser.recoverState(last_updated_state);
             // collect imu datas during two neighbor gps frames
             vector<UKF::ImuData<double>> imu_datas(0);
             // search first imu data after gps data
@@ -284,14 +284,17 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "imu_uwb_fusion_ukf_node");
     ros::NodeHandle nh, ph("~");
-
     // load imu param and config fuser
-    double sigma_an, sigma_wn, sigma_aw, sigma_ww;
-    if (!ph.getParam("sigma_an", sigma_an) || !ph.getParam("sigma_wn", sigma_wn) || !ph.getParam("sigma_aw", sigma_aw) || !ph.getParam("sigma_ww", sigma_ww))
-    {
-        cout << "please config imu param !!!" << endl;
-        return 0;
-    }
+        double sigma_an, sigma_wn, sigma_aw, sigma_ww;
+        sigma_an =3.5848651612538265e+04; 
+        sigma_wn =5.0319853834530663e-00;
+        sigma_aw =1.4189758078282432e-03;
+        sigma_ww =1.3487170893986536e-05;
+    // if (!ph.getParam("sigma_an", sigma_an) || !ph.getParam("sigma_wn", sigma_wn) || !ph.getParam("sigma_aw", sigma_aw) || !ph.getParam("sigma_ww", sigma_ww))
+    // {
+    //     cout << "please config imu param !!!" << endl;
+    //     return 0;
+    // }
     imu_uwb_fuser.cfgImuVar(sigma_an, sigma_wn, sigma_aw, sigma_ww);
 
     // load imu freqency param
@@ -304,6 +307,7 @@ int main(int argc, char **argv)
     ros::Subscriber imu_sub = nh.subscribe<sensor_msgs::Imu>("/imu/data", 10, imuCallback);
     traj_puber = nh.advertise<nav_msgs::Path>("traj", 1);
     result_puber = nh.advertise<geometry_msgs::PoseStamped>("result", 1);
+    
 
     // start process
     thread process_thread(processThread);
