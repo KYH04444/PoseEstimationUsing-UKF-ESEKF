@@ -4,11 +4,10 @@
 #include <iostream>
 #include <vector>
 #include "ukf_types.h"
-#include <Eigen/Dense>
-// #include <Eigen/Cholesky>
-#include <vector>
+// #include <Eigen/Dense>
+// #include <vector>
 using namespace std;
-using namespace Eigen;
+// using namespace Eigen;
 namespace UKF {
 
 class ImuUwbFusionUkf {
@@ -26,6 +25,7 @@ public:
     void cfgRefUwb(double position_x, double position_y, double position_z);
     float StatePropagation(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data);
     void CovPropagation();
+    void recoverState(const UKF::STATE &last_updated_state);
     Eigen::Vector3d vee(const Eigen::Matrix3d &Phi);
     Eigen::Matrix3d wedge(const Eigen::Vector3d &v);
     Eigen::Matrix3d Exp(const Eigen::Vector3d &gyroDt);
@@ -35,19 +35,18 @@ public:
     STATE getNewState();
     STATE f(const UKF::STATE& State, const ImuData<double> &imu_data, const Eigen::VectorXd& w, double dt); 
     STATE up_phi(const UKF::STATE &state, const Eigen::VectorXd &xi);
-    STATE phi(const UKF::STATE &state, const Eigen::VectorXd xi);
+    STATE phi(const UKF::STATE &state, const Eigen::VectorXd &xi);
     Eigen::VectorXd phi_inv(const UKF::STATE &state, const UKF::STATE &hat_state);
-    Eigen::Matrix3d rotationMatrixFromVectors(Eigen::Vector3d v0, Eigen::Vector3d v1);
     Eigen::Vector3d h(const UKF::STATE &State);
 
 private:
     Eigen::Matrix3d Rot;
     Eigen::Vector3d v, p, b_gyro, b_acc, up_idx, y, g_;
-    Eigen::Matrix<double, 12, 12> Q;
+    // Eigen::Matrix<double, 12, 12> Q;
     Eigen::VectorXd alpha;
     Eigen::VectorXd r;
-    Eigen::VectorXi red_idxs;
-    Eigen::MatrixXd P0, F, P, cholQ, R, H, G;
+    Eigen::VectorXd red_idxs;
+    Eigen::MatrixXd P0, F, P, cholQ, R, H, G, Q;
     Eigen::Matrix<double, 12, 12> Qi_;
     double sigma_an_2_;
     double sigma_wn_2_;
