@@ -1,7 +1,7 @@
 #include "ukf_imu_uwb_fusion.h"
 #include <vector>
-#include <Eigen/Dense>
-#include <cmath>
+// #include <Eigen/Dense>
+// #include <cmath>
 #include <iomanip>
 using namespace Eigen;
 namespace UKF {
@@ -12,20 +12,24 @@ ImuUwbFusionUkf::ImuUwbFusionUkf() :
     p(Eigen::Vector3d::Zero()),
     b_gyro(Eigen::Vector3d::Zero()),
     b_acc(Eigen::Vector3d::Zero()),
+    up_idx(Eigen::Vector3d(6,7,8)),
+    y(Eigen::Vector3d::Zero()),
+    g_(Eigen::Vector3d(0.0, 0.0, -9.81)),
     alpha(Eigen::VectorXd::Constant(5, 1e-3)),
     Q(Eigen::Matrix<double, 12, 12>::Zero()),
     F(Eigen::Matrix<double, 15, 15>::Zero()),
-    cholQ(Q.llt().matrixL().transpose()),
-    red_idxs(Eigen::VectorXi::LinSpaced(15, 0, 14)),
-    P0(Eigen::MatrixXd::Zero(15, 15)),
+    cholQ(Eigen::Matrix<double, 12, 12>::Zero()),
+    // cholQ(Q.llt().matrixL().transpose()),
+    red_idxs(Eigen::VectorXd::LinSpaced(15, 0, 14)),
+    P0(Eigen::Matrix<double, 15, 15>::Zero()),
     P(P0),
-    G(Eigen::MatrixXd::Zero(P.rows(), Q.rows())),
-    up_idx(Eigen::Vector3d::Constant(6,7,8)),
+    H(Eigen::MatrixXd::Zero(0,0)),
+    G(Eigen::MatrixXd::Zero(15,12)),
     TOL(1e-9), 
     q(Q.rows()), 
-    g_(Eigen::Vector3d(0.0, 0.0, -9.81)),
-    R(Eigen::Matrix3d::Identity()*0.00002),
-    y(Eigen::Vector3d::Zero()),
+    r(Eigen::VectorXd::Zero(0)),
+    // gnssR(Eigen::Matrix3d::Identity()*0.00002),
+    R(Eigen::MatrixXd::Zero(0,0)),
     weights(red_idxs.size(), Q.rows(), up_idx.size(), 0, 0, alpha.data())
 {
     newState.Rot.setZero();
@@ -38,12 +42,12 @@ ImuUwbFusionUkf::ImuUwbFusionUkf() :
 
 ImuUwbFusionUkf::~ImuUwbFusionUkf() {}
 
-Eigen::Vector3d vee(const Eigen::Matrix3d& Phi) 
+Eigen::Vector3d ImuUwbFusionUkf::vee(const Eigen::Matrix3d& Phi) 
 {
     return Eigen::Vector3d(Phi(2, 1), Phi(0, 2), Phi(1, 0)); //skew-symmetric에서 다시 벡터로
 }
 
-Eigen::Vector3d Log(const Eigen::Matrix3d& Rot) 
+Eigen::Vector3d ImuUwbFusionUkf::Log(const Eigen::Matrix3d& Rot) 
 {
     double TOL = 1e-9;
     double cos_angle = 0.5 * Rot.trace() - 0.5;
@@ -60,7 +64,7 @@ Eigen::Vector3d Log(const Eigen::Matrix3d& Rot)
     return phi;
 }
 
-Eigen::Matrix3d wedge(const Eigen::Vector3d& v) 
+Eigen::Matrix3d ImuUwbFusionUkf::wedge(const Eigen::Vector3d& v) 
 {
     Eigen::Matrix3d m;
     m << 0, -v.z(), v.y(),
@@ -69,7 +73,7 @@ Eigen::Matrix3d wedge(const Eigen::Vector3d& v)
     return m;
 }
 
-Eigen::Matrix3d Exp(const Eigen::Vector3d& gyroDt)
+Eigen::Matrix3d ImuUwbFusionUkf::Exp(const Eigen::Vector3d& gyroDt)
 {   
     double TOL = 1e-9;
     double angle = gyroDt.norm(); // imu data로부터 dt를 곱해져셔 처음 값이 들어옴 정규화 시켜서 gyto*dt값의 크기를 angle로 지정
@@ -91,17 +95,16 @@ Eigen::Matrix3d Exp(const Eigen::Vector3d& gyroDt)
     return Rot;
 }
 
-Eigen::VectorXd phi_inv(const UKF::STATE &state, const UKF::STATE &hat_state) {
+Eigen::VectorXd ImuUwbFusionUkf::phi_inv(const UKF::STATE &state, const UKF::STATE &hat_state) {
     Eigen::Matrix3d dRot = hat_state.Rot * state.Rot.transpose();
     Eigen::Vector3d dRotVec = Log(dRot);
     Eigen::Vector3d dv = hat_state.v - state.v; 
     Eigen::Vector3d dp = hat_state.p - state.p; 
     Eigen::Vector3d db_gyro = hat_state.b_gyro - state.b_gyro; 
     Eigen::Vector3d db_acc = hat_state.b_acc - state.b_acc;
-
     Eigen::VectorXd xi(15);
     xi << dRotVec, dv, dp, db_gyro, db_acc;
-    return xi;
+    return xi.transpose();
 }
 
 void ImuUwbFusionUkf::imuInit(const vector<ImuData<double>> &imu_datas)
@@ -124,52 +127,32 @@ void ImuUwbFusionUkf::imuInit(const vector<ImuData<double>> &imu_datas)
     newState.Rot = Eigen::Matrix3d::Zero();
     newState.b_acc = ac_state_.Rot * g_ + mean_acc;
     ac_state_ = newState;
-    // cout << "use " << num << " imu datas to init imu pose and bias" << endl;
-    // cout << " : " << no_state_.w_b[0] << " " << no_state_.w_b[1] << " " << no_state_.w_b[2] << endl;
-    // cout << "init imu bias_a : " << no_state_.a_b[0] << " " << no_state_.a_b[1] << " " << no_state_.a_b[2] << endl;
-    // cout << "init imu attitude : " << no_state_.q.w() << " " << no_state_.q.x() << " " << no_state_.q.y() << " " << no_state_.q.z() << endl;
 }
 
 void ImuUwbFusionUkf::updateQ(double dt)
 {
-    Qi_.setIdentity();
-    Qi_.block<3, 3>(0, 0) *= sigma_an_2_ * dt * dt;
-    Qi_.block<3, 3>(3, 3) *= sigma_wn_2_ * dt * dt;
-    Qi_.block<3, 3>(6, 6) *= sigma_aw_2_ * dt;
-    Qi_.block<3, 3>(9, 9) *= sigma_ww_2_ * dt;
+    Q.setIdentity();
+    Q.block<3, 3>(0, 0) *= sigma_an_2_ * dt * dt;
+    Q.block<3, 3>(3, 3) *= sigma_wn_2_ * dt * dt;
+    Q.block<3, 3>(6, 6) *= sigma_aw_2_ * dt;
+    Q.block<3, 3>(9, 9) *= sigma_ww_2_ * dt;
+    cholQ = Q.llt().matrixL().transpose();
+    
 }
 
-Eigen::Matrix3d rotationMatrixFromVectors(Eigen::Vector3d v0, Eigen::Vector3d v1) {
-    v0.normalize(); 
-    v1.normalize();
-
-    Eigen::Vector3d axis = v0.cross(v1);
-
-    double angle = acos(v0.dot(v1));
-
-    Eigen::Matrix3d K;
-    K <<     0, -axis.z(),  axis.y(),
-         axis.z(),      0, -axis.x(),
-        -axis.y(),  axis.x(),      0;
-
-    Eigen::Matrix3d rotationMatrix = Eigen::Matrix3d::Identity() + sin(angle) * K + (1 - cos(angle)) * K * K;
-
-    return rotationMatrix;
-}
-
-STATE phi(const UKF::STATE &state, const Eigen::VectorXd xi)
+STATE ImuUwbFusionUkf::phi(const UKF::STATE &state, const Eigen::VectorXd &xi)
 {   
     Eigen::Matrix3d Rot = Exp(xi.segment<3>(0))*state.Rot;
     STATE new_state;
     new_state.Rot = Rot; 
     new_state.v = state.v + xi.segment<3>(3);
-    new_state.p = xi + state.p + xi.segment<3>(6);
+    new_state.p =  state.p + xi.segment<3>(6);
     new_state.b_gyro = state.b_gyro + xi.segment<3>(9);
     new_state.b_acc = state.b_acc + xi.segment<3>(12);
     return new_state;
 }
 
-STATE up_phi(const UKF::STATE &state, const Eigen::VectorXd xi)
+STATE ImuUwbFusionUkf::up_phi(const UKF::STATE &state, const Eigen::VectorXd &xi)//////////////////////////
 {
     STATE new_state;
     new_state.Rot = state.Rot; 
@@ -192,11 +175,11 @@ float ImuUwbFusionUkf::StatePropagation(const ImuData<double> &last_imu_data, co
     double dt = imu_data.stamp - last_imu_data.stamp;
     Eigen::VectorXd w;
     w = Eigen::VectorXd::Constant(6,0);
-    STATE newState = f(ac_state_, imu_data, w, dt);
+    newState = f(ac_state_, imu_data, w, dt);
     return dt;
 }
   
-STATE f(const UKF::STATE &State, const ImuData<double> &imu_data, const Eigen::VectorXd& w, double dt) 
+STATE ImuUwbFusionUkf::f(const UKF::STATE &State, const ImuData<double> &imu_data, const Eigen::VectorXd& w, double dt) //////////////////////////
 {   Eigen::Vector3d g_; 
     g_ = Eigen::Vector3d(0,0,-9.8);
     Eigen::Vector3d gyro = imu_data.gyr - State.b_gyro + w.segment<3>(0);
@@ -224,64 +207,81 @@ STATE ImuUwbFusionUkf::getNewState()
 void ImuUwbFusionUkf::F_num(const ImuData<double> &imu_data, double dt) 
 {
     int d = red_idxs.size();
-    MatrixXd P_red = P.block(0, 0, d, d) + TOL * MatrixXd::Identity(d, d);
+    MatrixXd P_red = P.block(0, 0, d, d) + TOL * MatrixXd::Identity(d, d); //0,0에서 시작해서 15x15까지 행렬사용
     Eigen::VectorXd w = VectorXd::Zero(q);
-    // MatrixXd xis = weights.red_d.sqrt_d_lambda * P_red.llt().matrixL().transpose();
-    Eigen::MatrixXd matrixL_transposed = P_red.llt().matrixL().transpose();
-    Eigen::MatrixXd xis = weights.up_d.sqrt_d_lambda * matrixL_transposed;
+    Eigen::MatrixXd matrixL_transposed = P_red.llt().matrixL().transpose(); //p_red의 cholesky분해하고 하삼각행렬의 전치
+    Eigen::MatrixXd xis = weights.red_d.sqrt_d_lambda * matrixL_transposed;
     MatrixXd new_xis = MatrixXd::Zero(2 * d, d);
-    STATE ac_state_ = getState();
-    STATE new_state = getNewState();
+    // STATE ac_state_ = getState();
+    // STATE new_state = getNewState();
     for (int j = 0; j < d; ++j) {
-        auto s_j_p = phi(ac_state_, xis.col(j));
-        auto s_j_m = phi(ac_state_, -xis.col(j));
+        auto s_j_p = phi(ac_state_, xis.row(j));
+        auto s_j_m = phi(ac_state_, -xis.row(j));
         auto new_s_j_p = f(s_j_p, imu_data, w, dt);
         auto new_s_j_m = f(s_j_m, imu_data, w, dt);
 
-        new_xis.row(j) = phi_inv(new_state, new_s_j_p).transpose();
-        new_xis.row(d + j) = phi_inv(new_state, new_s_j_m).transpose();
+        new_xis.row(j) = phi_inv(newState, new_s_j_p).transpose();
+        new_xis.row(d + j) = phi_inv(newState, new_s_j_m).transpose();
     }
+
     Eigen::VectorXd new_xi = weights.red_d.wj * new_xis.colwise().sum();
-    new_xis.rowwise() -= new_xi.transpose();
-    MatrixXd Xi = weights.red_d.wj * new_xis.transpose() * MatrixXd::Identity(d, d).replicate(2, 1);
-    F.block(0, 0, d, d) = P_red.llt().solve(Xi.transpose()).transpose();
+    // std::cout <<"new_xis" << new_xi <<std::endl;
+    for (int i = 0; i < new_xis.rows(); ++i) 
+    {
+        new_xis.row(i) -= new_xi;
+    }
+    Eigen::MatrixXd stacked_xis(xis.rows() * 2, xis.cols());
+    stacked_xis << xis,
+                  -xis;
+    MatrixXd Xi = weights.red_d.wj * new_xis.transpose() *stacked_xis;
+    F.block(0, 0, d, d) = P_red.fullPivLu().solve(Xi.transpose()).transpose();
 }
 
 void ImuUwbFusionUkf::G_num(const ImuData<double> &imu_data, double dt) 
-{
+{   
+    updateQ(dt);
     int d = red_idxs.size(); 
-    int q = cholQ.rows();
+    int q = Q.rows();
     MatrixXd new_xis = MatrixXd::Zero(2 * q, d);
+    // std::cout << "cholQ" << cholQ << std::endl;
     for (int j = 0; j < q; ++j) 
     {   
-        STATE ac_state_ = getState();
-        STATE new_state = getNewState();
-        Eigen::VectorXd w_p = weights.q.sqrt_d_lambda * cholQ.row(j).transpose();
-        Eigen::VectorXd w_m = -weights.q.sqrt_d_lambda * cholQ.row(j).transpose();
+        // STATE ac_state_ = getState();
+        // STATE new_state = getNewState();
+        Eigen::VectorXd w_p = weights.q.sqrt_d_lambda * cholQ.row(j);
+        Eigen::VectorXd w_m = -weights.q.sqrt_d_lambda * cholQ.row(j);
 
         auto new_s_j_p = f(ac_state_, imu_data, w_p, dt);
         auto new_s_j_m = f(ac_state_, imu_data, w_m, dt);
 
-        new_xis.row(j) = phi_inv(new_state, new_s_j_p).transpose();
-        new_xis.row(q + j) = phi_inv(new_state, new_s_j_m).transpose();
+        new_xis.row(j) = phi_inv(newState, new_s_j_p).transpose();
+        new_xis.row(q + j) = phi_inv(newState, new_s_j_m).transpose();
     }
 
     Eigen::VectorXd new_xi = weights.q.wj * new_xis.colwise().sum();
-    new_xis.rowwise() -= new_xi.transpose();
 
-    MatrixXd Xi = weights.q.wj * new_xis.transpose() * MatrixXd::Identity(d, d).replicate(2, 1);
-    Eigen::MatrixXd G;
-    G = MatrixXd::Zero(P.rows(), q);
+    for (int i = 0; i < new_xis.rows(); ++i) 
+    {
+        new_xis.row(i) -= new_xi;
+    }
+    Eigen::MatrixXd stacked_xis(q * 2, Q.cols());
+    stacked_xis << cholQ,
+                  -cholQ;
+    MatrixXd Xi = weights.q.wj * new_xis.transpose() * stacked_xis;
+    // Eigen::MatrixXd G;
+    // G = MatrixXd::Zero(P.rows(), q);
     for (int i = 0; i < red_idxs.size(); ++i) {
-        G.row(red_idxs(i)) = Q.llt().solve(Xi.transpose()).transpose().row(i);
+        G.row(red_idxs(i)) = Q.fullPivLu().solve(Xi.transpose()).transpose().row(i);
     }
 }
 
 void ImuUwbFusionUkf::CovPropagation()
-{
-    P = F*P*(F.transpose() + G*Q*G.transpose());
+{   
+    // std::cout <<"FPF" << F*P*F.transpose() <<std::endl;
+    // std::cout <<"GQG" << G*Q*G.transpose() <<std::endl;
+    P = F*P*F.transpose() + G*Q*G.transpose();
     P = (P+P.transpose())/2;
-    ac_state_ = getNewState();
+    ac_state_ = newState;
 
 }
 
@@ -290,6 +290,10 @@ void ImuUwbFusionUkf::update(const UwbData<double> &uwb_data, const Eigen::Matri
 
     H_num(uwb_data, up_idx, R);
     state_update();
+}
+void ImuUwbFusionUkf::recoverState(const UKF::STATE &last_updated_state)
+{
+    ac_state_ = last_updated_state;
 }
 
 void ImuUwbFusionUkf::H_num(const UwbData<double> &uwb_data, const Eigen::VectorXd& idxs, const Eigen::MatrixXd& __R) 
@@ -301,59 +305,75 @@ void ImuUwbFusionUkf::H_num(const UwbData<double> &uwb_data, const Eigen::Vector
             }
         }
         
-        P_red += TOL * Eigen::MatrixXd::Identity(idxs.size(), idxs.size());
+        P_red = P_red + TOL * Eigen::MatrixXd::Identity(idxs.size(), idxs.size());
 
         Eigen::MatrixXd matrixL_transposed = P_red.llt().matrixL().transpose();
         Eigen::MatrixXd xis = weights.up_d.sqrt_d_lambda * matrixL_transposed;
-        Eigen::MatrixXd y_mat = Eigen::MatrixXd::Zero(2 * idxs.size(), y.size());
+        Eigen::MatrixXd y_mat = Eigen::MatrixXd::Zero(2 * P_red.rows(), y.rows());
         Eigen::VectorXd hat_y = h(ac_state_); 
         for (int j = 0; j < idxs.size(); ++j) {
             STATE s_j_p = up_phi(ac_state_, xis.row(j));
             STATE s_j_m = up_phi(ac_state_, -xis.row(j));
             y_mat.row(j) = h(s_j_p);
-            y_mat.row(idxs.size() + j) = h(s_j_m);
+            y_mat.row(P_red.rows() + j) = h(s_j_m);
         }
+        Eigen::VectorXd y_mat_rowsum = weights.up_d.wj * y_mat.colwise().sum();
+        Eigen::VectorXd y_bar = weights.up_d.wm * hat_y ;
+        // std::cout << "y_mat_rowsum" <<y_mat_rowsum <<std::endl;
+        for (int i = 0; i<y_bar.size(); ++i)
+        {
+            y_bar(i) += y_mat_rowsum(i);
+            
+        }
+        // std::cout <<"y_bar" <<y_bar << std::endl;
+        // y_mat = y_mat - y_bar;
+        
+        for (int i = 0; i < y_mat.rows(); ++i) 
+        {
+            y_mat.row(i) -= y_bar;
+        }
+        Eigen::MatrixXd stacked_xis(xis.rows() * 2, xis.cols());
+        stacked_xis << xis,
+                      -xis;
 
-        Eigen::VectorXd y_bar = weights.up_d.wm * hat_y + weights.up_d.wj * y_mat.colwise().sum();
-        y_mat = y_mat.colwise() - y_bar;
-
-        Eigen::MatrixXd Y = weights.up_d.wj * y_mat.transpose() * (xis.rowwise().replicate(2) - xis.rowwise().replicate(2));
-        Eigen::MatrixXd H_idx = P_red.llt().solve(Y.transpose()).transpose();
+        Eigen::MatrixXd Y = weights.up_d.wj * y_mat.transpose() * stacked_xis;
+        Eigen::MatrixXd H_idx = P_red.fullPivLu().solve(Y.transpose()).transpose();
 
         Eigen::MatrixXd _H = Eigen::MatrixXd::Zero(uwb_data.data.rows(), P.rows());
         for (int i = 0; i < idxs.size(); ++i) {
             _H.col(idxs(i)) = H_idx.col(i);
         }
 
-        Eigen::VectorXd _r = uwb_data.data - y_bar;
-
-        Eigen::MatrixXd H_new(H.rows() + _H.rows(), H.cols());
-        H_new << H,
-                _H;
-        H = H_new;
-
-        Eigen::MatrixXd r_new(r.rows(), r.cols() + _r.cols());
-        r_new << r,_r;
-        r = r_new;
-
-        Eigen::MatrixXd R_new(R.rows() + __R.rows(), R.cols() + __R.cols());
-
-        R_new.setZero(); 
-        R_new.topLeftCorner(3, 3) = R;
-        R_new.bottomRightCorner(3, 3) = __R;
-        R = R_new;
+        // Eigen::VectorXd _r = uwb_data.data - y_bar;
+        VectorXd _r = Eigen::Vector3d::Zero();
+        for (int i = 0; i<_r.size(); ++i)
+        {   
+            _r(i) = uwb_data.data(i) -y_bar(i);
+            // y_bar(i) += y_mat_rowsum(i);
+            
+        }
+        // std::cout << "H_" << _H <<std::endl;
+        // std::cout << "H" << H <<std::endl;
+        // H.resize(_H.rows(), _H.cols());
+        // H.setZero();
+        // Eigen::MatrixXd H_new(_H.rows() + _H.rows(), H.cols());
+        // H_new << H,
+        //         _H;
+        H = _H;
+        r = _r; 
+        R = __R;
 
 }   
 
 void ImuUwbFusionUkf::state_update()
 {
     Eigen::MatrixXd S = H*P*H.transpose() + R;
-    Eigen::MatrixXd K = S.llt().solve((P*H.transpose()).transpose()).transpose(); 
+    Eigen::MatrixXd K = S.fullPivLu().solve((P*H.transpose()).transpose()).transpose(); 
 
-    Eigen::MatrixXd xi = K*r;
-    STATE ac_state_ = phi(ac_state_, xi);
+    Eigen::VectorXd xi = K*r;
+    ac_state_ = phi(ac_state_, xi);
      
-    Eigen::MatrixXd P_new = (Eigen::MatrixXd::Identity(P.rows(), P.cols()) - K * H) * P;
+    Eigen::MatrixXd P_new = (Eigen::MatrixXd::Identity(P.rows(),P.rows()) - K * H) * P;
     P = (P_new + P_new.transpose())/2;
     H.setZero();
     r.setZero();
