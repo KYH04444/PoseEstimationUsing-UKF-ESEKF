@@ -239,7 +239,7 @@ void ImuUwbFusionUkf::F_num(const ImuData<double> &imu_data, double dt)
 
 void ImuUwbFusionUkf::G_num(const ImuData<double> &imu_data, double dt) 
 {   
-    updateQ(dt);
+    // updateQ(dt);
     int d = red_idxs.size(); 
     int q = Q.rows();
     MatrixXd new_xis = MatrixXd::Zero(2 * q, d);
