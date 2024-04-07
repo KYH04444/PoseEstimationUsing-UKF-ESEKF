@@ -1,6 +1,5 @@
 <?xml version="1.0"?>
 <launch>
-    <node name="traj_plot_node" pkg="uwb_imu" type="traj_plot.py" output="screen"/>
     <!-- MAVROS posix SITL environment launch script -->
     <!-- launches MAVROS, PX4 SITL, Gazebo environment, and spawns vehicle -->
     <!-- vehicle pose -->
@@ -33,9 +32,6 @@
         <arg name="R" value="$(arg R)"/>
         <arg name="P" value="$(arg P)"/>
         <arg name="Y" value="$(arg Y)"/>
-
-
-
     </include>
     <!-- MAVROS -->
     <include file="$(find mavros)/launch/px4.launch">
@@ -45,33 +41,39 @@
         <arg name="respawn_mavros" value="$(arg respawn_mavros)"/>
     </include>
 
-    <!-- IMAGE VIEWER NODE -->
-    <!-- <node name="image_view" pkg="image_view" type="image_view" respawn="false" output="screen">
-    	<remap from="image" to="/quad_f450_camera/camera_link/raw_image" />
-   	<param name="autosize" value="true" />
-    </node> -->
-
     <param name="use_sim_time" value="true"/>
 
-    <!--node pkg="nmea_navsat_driver" type="nmea_topic_driver" name="nmea_topic_driver" output="screen"/-->
-
-    <node pkg="uwb_imu" type="imu_uwb_fusion_node" name="uwb_imu_node" output="screen">
-        <param name="sigma_an" value="3.5848651612538265e+04"/>
+    <node pkg="uwb_imu" type="imu_uwb_fusion_ukf_node" name="ukf_node" output="screen">
+        <!-- <param name="sigma_an" value="3.5848651612538265e+04"/> 
+        <param name="sigma_wn" value="5.0319853834530663e-00"/>
+        <param name="sigma_aw" value="1.4189758078282432e-03"/>
+        <param name="sigma_ww" value="1.3487170893986536e-05"/> -->
+        <param name="sigma_an" value="0.01"/> 
+        <param name="sigma_wn" value="0.05"/>
+        <param name="sigma_aw" value="0.0000001"/>
+        <param name="sigma_ww" value="0.0001"/>
+    </node>
+    
+    <node pkg="uwb_imu" type="imu_uwb_fusion_node" name="esekf_node" output="screen">
+        <param name="sigma_an" value="3.5848651612538265e+04"/> 
         <param name="sigma_wn" value="5.0319853834530663e-00"/>
         <param name="sigma_aw" value="1.4189758078282432e-03"/>
         <param name="sigma_ww" value="1.3487170893986536e-05"/>
+        <!-- <param name="sigma_an" value="0.01"/> 
+        <param name="sigma_wn" value="0.05"/>
+        <param name="sigma_aw" value="0.0000001"/>
+        <param name="sigma_ww" value="0.0001"/> -->
     </node>
-    
+
     <node pkg="uwb_imu" type="moving_average_filter_node" name="moving_average_filter_node" output="screen">
     </node> 
 
     <node pkg="uwb_imu" type="uwb_filtered" name="uwb_filtered" output="screen">
     </node>  
+    <node name="traj_plot_node" pkg="uwb_imu" type="traj_plot.py" output="screen"/>
 
-    <node pkg="uwb_imu" type="uwb_plot_node" name="uwb_plot_node" output="screen">
-    </node>
-
-    <!-- <node pkg="rviz" type="rviz" name="rviz" output="screen" args="-d $(find imu_uwb_fusion)/launch/rviz_new.rviz"/> -->
+    <!-- <node pkg="uwb_imu" type="uwb_plot_node" name="uwb_plot_node" output="screen">
+    </node> -->
 	
 </launch>
 
