@@ -27,6 +27,7 @@ ImuUwbFusionUkf::ImuUwbFusionUkf() :
     G(Eigen::MatrixXd::Zero(15,12)),
     TOL(1e-9), 
     q(Q.rows()), 
+    dt(0),
     r(Eigen::VectorXd::Zero(0)),
     // gnssR(Eigen::Matrix3d::Identity()*0.00002),
     R(Eigen::MatrixXd::Zero(0,0)),
@@ -107,6 +108,10 @@ Eigen::VectorXd ImuUwbFusionUkf::phi_inv(const UKF::STATE &state, const UKF::STA
     return xi.transpose();
 }
 
+double ImuUwbFusionUkf::getDt()
+{
+    return dt;
+}
 void ImuUwbFusionUkf::imuInit(const vector<ImuData<double>> &imu_datas)
 {
     int num = 0;
@@ -129,13 +134,20 @@ void ImuUwbFusionUkf::imuInit(const vector<ImuData<double>> &imu_datas)
     ac_state_ = newState;
 }
 
-void ImuUwbFusionUkf::updateQ(double dt)
+void ImuUwbFusionUkf::updateQ()
 {
-    Q.setIdentity();
-    Q.block<3, 3>(0, 0) *= sigma_an_2_ * dt * dt;
-    Q.block<3, 3>(3, 3) *= sigma_wn_2_ * dt * dt;
-    Q.block<3, 3>(6, 6) *= sigma_aw_2_ * dt;
-    Q.block<3, 3>(9, 9) *= sigma_ww_2_ * dt;
+    // Q.setIdentity();
+    double imu_std[4] = {sigma_an_2_, sigma_wn_2_, sigma_aw_2_, sigma_ww_2_};
+    // Q.block<3, 3>(0, 0) = sigma_an_2_**2 
+    // Q.block<3, 3>(3, 3) = sigma_wn_2_**2 
+    // Q.block<3, 3>(6, 6) = sigma_aw_2_**2 
+    // Q.block<3, 3>(9, 9) = sigma_ww_2_**2 
+    // cholQ = Q.llt().matrixL().transpose();
+
+    for(int i = 0; i < 4; ++i) 
+    {
+        Q.block<3,3>(i*3, i*3) = (imu_std[i] * imu_std[i]) * Eigen::MatrixXd::Identity(3, 3);
+    }
     cholQ = Q.llt().matrixL().transpose();
     
 }
@@ -172,7 +184,7 @@ Eigen::Vector3d ImuUwbFusionUkf::h(const UKF::STATE &State)
 
 float ImuUwbFusionUkf::StatePropagation(const ImuData<double> &last_imu_data, const ImuData<double> &imu_data) 
 {
-    double dt = imu_data.stamp - last_imu_data.stamp;
+    dt = imu_data.stamp - last_imu_data.stamp;
     Eigen::VectorXd w;
     w = Eigen::VectorXd::Constant(6,0);
     newState = f(ac_state_, imu_data, w, dt);
@@ -239,17 +251,17 @@ void ImuUwbFusionUkf::F_num(const ImuData<double> &imu_data, double dt)
 
 void ImuUwbFusionUkf::G_num(const ImuData<double> &imu_data, double dt) 
 {   
-    // updateQ(dt);
+    updateQ();
+    Eigen::MatrixXd Q_half = Q.block<6,6>(0,0);
+    Eigen::MatrixXd cholQ_half = Q_half.llt().matrixL().transpose();
     int d = red_idxs.size(); 
-    int q = Q.rows();
+    int q = Q_half.rows();
     MatrixXd new_xis = MatrixXd::Zero(2 * q, d);
     // std::cout << "cholQ" << cholQ << std::endl;
     for (int j = 0; j < q; ++j) 
     {   
-        // STATE ac_state_ = getState();
-        // STATE new_state = getNewState();
-        Eigen::VectorXd w_p = weights.q.sqrt_d_lambda * cholQ.row(j);
-        Eigen::VectorXd w_m = -weights.q.sqrt_d_lambda * cholQ.row(j);
+        Eigen::VectorXd w_p = weights.q.sqrt_d_lambda * cholQ_half.row(j);
+        Eigen::VectorXd w_m = -weights.q.sqrt_d_lambda * cholQ_half.row(j);
 
         auto new_s_j_p = f(ac_state_, imu_data, w_p, dt);
         auto new_s_j_m = f(ac_state_, imu_data, w_m, dt);
@@ -264,19 +276,35 @@ void ImuUwbFusionUkf::G_num(const ImuData<double> &imu_data, double dt)
     {
         new_xis.row(i) -= new_xi;
     }
-    Eigen::MatrixXd stacked_xis(q * 2, Q.cols());
-    stacked_xis << cholQ,
-                  -cholQ;
+    Eigen::MatrixXd stacked_xis(q * 2, Q_half.cols());
+    stacked_xis << cholQ_half,
+                  -cholQ_half;
     MatrixXd Xi = weights.q.wj * new_xis.transpose() * stacked_xis;
+
+    // std::cout <<"Q_half: " << Q_half << std::endl ; // 6x6
+    // std::cout <<"Xi: " << Xi << std::endl ; // 15x6
+    
     // Eigen::MatrixXd G;
-    // G = MatrixXd::Zero(P.rows(), q);
-    for (int i = 0; i < red_idxs.size(); ++i) {
-        G.row(red_idxs(i)) = Q.fullPivLu().solve(Xi.transpose()).transpose().row(i);
-    }
+    // G = MatrixXd::Zero(P.rows(), q); 
+    // G.resize(P.rows(), q);
+    // for(int i=0; i<6; ++i)
+    // {
+    // G.row(i) = Q_half.fullPivLu().solve(Xi.transpose()).transpose().row(i); //Q_half*x = Xi.transpose()
+    // }
+    G.block<15,6>(0,0) = Q_half.fullPivLu().solve(Xi.transpose()).transpose();
+    G.block<6,6>(6, 6).setIdentity()*dt;
+    // for (int i = 0; i < red_idxs.size(); ++i)
+        // {    
+        // //     G(red_idxs(i)) = Q_half.fullPivLu().solve(Xi.transpose()).transpose().row(i);
+        // }
+
+    
+    // for (int j = 0; j<6; ++j)
 }
 
 void ImuUwbFusionUkf::CovPropagation()
 {   
+    updateQ();
     // std::cout <<"FPF" << F*P*F.transpose() <<std::endl;
     // std::cout <<"GQG" << G*Q*G.transpose() <<std::endl;
     P = F*P*F.transpose() + G*Q*G.transpose();
@@ -287,10 +315,10 @@ void ImuUwbFusionUkf::CovPropagation()
 
 void ImuUwbFusionUkf::update(const UwbData<double> &uwb_data, const Eigen::MatrixXd& R)
 {   
-
     H_num(uwb_data, up_idx, R);
     state_update();
 }
+
 void ImuUwbFusionUkf::recoverState(const UKF::STATE &last_updated_state)
 {
     ac_state_ = last_updated_state;
