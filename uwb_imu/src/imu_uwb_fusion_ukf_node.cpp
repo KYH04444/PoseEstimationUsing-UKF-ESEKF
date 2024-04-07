@@ -19,7 +19,7 @@ vector<sensor_msgs::ImuConstPtr> imu_buffer;
 //vector<sensor_msgs::NavSatFixConstPtr> gps_buffer;
 vector<uwb_imu::UwbMsg::ConstPtr> uwb_buffer;
 mutex imu_mtx, uwb_mtx;
-
+float dt;
 UKF::ImuUwbFusionUkf imu_uwb_fuser; // fuser object
 ros::Publisher traj_puber;
 ros::Publisher result_puber;
@@ -27,7 +27,7 @@ bool initialized = false;
 UKF::ImuData<double> last_uwb_imu;     //last interpolated imu data at uwb time
 UKF::ImuData<double> last_imu;         //last imu data for predict
 UKF::STATE last_updated_state; //last updated state by uwb 
-
+UKF::ImuData<double> cur_imu;
 void imuCallback(const sensor_msgs::ImuConstPtr &msg)
 {
     unique_lock<mutex> lock(imu_mtx);
@@ -89,9 +89,9 @@ void pubResult()
 {   
     UKF::STATE result = imu_uwb_fuser.getState();
     geometry_msgs::PoseStamped pose;
-    std::cout << result.Rot <<std::endl;
+    // std::cout << result.Rot <<std::endl;
     Eigen::Quaterniond q = Eigen::Quaternion<double>(result.Rot);
-    pose.header.frame_id = "world";
+    pose.header.frame_id = "world1";
     pose.header.stamp = uwb_buffer[0]->header.stamp;
     pose.pose.position.x = result.p[0];
     pose.pose.position.y = result.p[1];
@@ -197,22 +197,19 @@ void processThread()
         
         for (auto &imu_msg : imu_buffer)
         {
-            UKF::ImuData<double> cur_imu = fromImuMsg(*imu_msg);
+            cur_imu = fromImuMsg(*imu_msg);
             if (cur_imu.stamp > last_imu.stamp)
             {   
-                float dt;
+                
                 dt = imu_uwb_fuser.StatePropagation(last_imu,cur_imu); 
-                imu_uwb_fuser.F_num(cur_imu, dt); 
-                imu_uwb_fuser.G_num(cur_imu, dt); 
-                imu_uwb_fuser.CovPropagation(); 
+
                 last_imu = cur_imu;
             }
         }
 
         // use uwb data to update state
         if (uwb_buffer.size() != 0)
-        {   
-            imu_uwb_fuser.recoverState(last_updated_state);
+        {    
             // collect imu datas during two neighbor gps frames
             vector<UKF::ImuData<double>> imu_datas(0);
             // search first imu data after gps data
@@ -250,6 +247,10 @@ void processThread()
             interpolateImuData(*(iter - 1), *iter, cur_stamp, inter_imu); //here
             UKF::ImuData<double> cur_uwb_imu = fromImuMsg(inter_imu);
 
+            imu_uwb_fuser.F_num(cur_imu, dt); 
+            imu_uwb_fuser.G_num(cur_imu, dt); 
+            imu_uwb_fuser.CovPropagation(); 
+            imu_uwb_fuser.recoverState(last_updated_state);
             cur_uwb_imu.stamp = cur_stamp;
             imu_datas.push_back(cur_uwb_imu);
             // generate uwb data
@@ -306,7 +307,7 @@ int main(int argc, char **argv)
     ros::Subscriber uwb_sub = nh.subscribe<uwb_imu::UwbMsg>("/uwb_filtered", 10, uwbCallback);
     ros::Subscriber imu_sub = nh.subscribe<sensor_msgs::Imu>("/imu/data", 10, imuCallback);
     traj_puber = nh.advertise<nav_msgs::Path>("traj", 1);
-    result_puber = nh.advertise<geometry_msgs::PoseStamped>("result", 1);
+    result_puber = nh.advertise<geometry_msgs::PoseStamped>("result_ukf", 1);
     
 
     // start process
