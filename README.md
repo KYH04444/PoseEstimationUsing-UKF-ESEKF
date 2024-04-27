@@ -23,7 +23,3 @@ https://github.com/KYH04444/Uwb_imu/assets/121211187/d3639089-4650-499f-9571-f9c
 
 
 https://github.com/KYH04444/Uwb_imu/assets/121211187/499be5f5-32a2-45ed-ba2e-05e833521512
-
-
-# Reference 
-https://github.com/Kihoon-Shin/imu_uwb_fusion
