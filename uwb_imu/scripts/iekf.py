@@ -111,8 +111,6 @@ class SE3IEKF:
         F = np.zeros((15, 15), dtype=np.float64)
 
         F[0:3, 9:12] = -np.eye(3)  
- 
-        # F[3:6, 0:3] = -self.vectorToSkewSymmetric(np.array([0, 0, 9.81]))
         F[3:6, 12:15] = -np.eye(3)  
         F[6:9, 3:6] = np.eye(3)  
         self.m_jacobian_matF = np.eye(15) + F * dt
@@ -139,21 +137,6 @@ class SE3IEKF:
         self.motionModel()
         self.motionModelJacobian()
         self.m_matP = self.m_jacobian_matF @ self.m_matP @ self.m_jacobian_matF.T + self.m_matQ
-        # self.m_matP = self.m_jacobian_matF @ self.m_matP + self.m_matP@self.m_jacobian_matF.T + self.m_matQ
-
-    # def prediction(self):
-    #     self.motionModel()
-    #     self.motionModelJacobian()
-    #     Ad = self.computeAdjoint(self.state["R"], self.state["p"])
-    #     self.m_matP = Ad @ self.m_matP @ Ad.T + self.m_matQ 
-
-    # def computeAdjoint(self, R, p):
-    #     Ad = np.zeros((15, 15))
-    #     Ad[0:3, 0:3] = R
-    #     Ad[3:6, 3:6] = R
-    #     Ad[6:9, 6:9] = R
-    #     Ad[9:, 9:] = np.eye(6)
-    #     return Ad
 
     def measurementModel(self):
         p = self.state["p"]
@@ -187,7 +170,7 @@ class SE3IEKF:
         delta_b_gyro = delta_xi[9:12]
         delta_b_acc = delta_xi[12:15]
 
-        self.state["R"] = self.exp_map(delta_theta) @ self.state["R"]
+        self.state["R"] = self.exp_map(delta_theta).T @ self.state["R"]
         # self.state["R"] =   self.state["R"] @ self.exp_map(delta_theta)
         self.state["v"] += delta_v
         self.state["p"] += delta_p
@@ -197,17 +180,17 @@ class SE3IEKF:
         self.m_matP = (np.eye(15) - Kk @ self.m_jacobian_matH) @ self.m_matP
 
         pose = PoseStamped()
-        pose.header.frame_id = "iekf"
+        pose.header.frame_id = "map"
         pose.header.stamp = rospy.Time.now()
         pose.pose.position.x = self.state["p"][0]
         pose.pose.position.y = self.state["p"][1]
         pose.pose.position.z = self.state["p"][2]
-        quaternion = R.from_matrix(self.state["R"]).as_quat()
-        # quaternion = R.from_matrix(self.state["R"]).as_euler('xyz',degrees=True)
+        # quaternion = R.from_matrix(self.state["R"]).as_quat()
+        quaternion = R.from_matrix(self.state["R"]).as_euler('xyz',degrees=True)
         pose.pose.orientation.x = quaternion[0]
         pose.pose.orientation.y = quaternion[1]
         pose.pose.orientation.z = quaternion[2]
-        pose.pose.orientation.w = quaternion[3]
+        # pose.pose.orientation.w = quaternion[3]
         self.pub_ekf.publish(pose)
 
 if __name__ == "__main__":
